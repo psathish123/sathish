@@ -1,0 +1,119 @@
+---
+# playbook-create-project.yml
+- name: Create OpenShift project with quotas and RBAC
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Create namespace
+      kubernetes.core.k8s:
+        api_version: v1
+        kind: Namespace
+        name: dev-team
+
+    - name: Apply resource quota
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: ResourceQuota
+          metadata:
+            name: dev-quota
+            namespace: dev-team
+          spec:
+            hard:
+              pods: "10"
+              requests.cpu: "4"
+              requests.memory: 8Gi
+
+    - name: Bind edit role to group
+      kubernetes.core.k8s:
+        definition:
+          kind: RoleBinding
+          apiVersion: rbac.authorization.k8s.io/v1
+          metadata:
+            name: dev-edit-binding
+            namespace: dev-team
+          subjects:
+            - kind: Group
+              name: dev-team
+              apiGroup: rbac.authorization.k8s.io
+          roleRef:
+            kind: ClusterRole
+            name: edit
+            apiGroup: rbac.authorization.k8s.io
+
+---
+# playbook-deploy-app.yml
+- name: Deploy application from YAML
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Deploy app from YAML file
+      kubernetes.core.k8s:
+        state: present
+        src: files/frontend-deployment.yaml
+
+---
+# playbook-patch-deployment.yml
+- name: Patch OpenShift deployment image
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Patch deployment image
+      kubernetes.core.k8s:
+        kind: Deployment
+        namespace: dev-team
+        name: frontend
+        patch:
+          spec:
+            template:
+              spec:
+                containers:
+                  - name: frontend
+                    image: quay.io/org/app:v2
+        merge_type: strategic
+
+---
+# playbook-healthcheck.yml
+- name: Health check for pods in a namespace
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Get pod info
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: dev-team
+      register: pod_info
+
+    - name: Display pod phases
+      debug:
+        msg: "{{ item.metadata.name }} status: {{ item.status.phase }}"
+      loop: "{{ pod_info.resources }}"
+
+---
+# playbook-backup-configmaps.yml
+- name: Backup OpenShift ConfigMaps
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Retrieve ConfigMaps
+      kubernetes.core.k8s_info:
+        kind: ConfigMap
+        namespace: dev-team
+      register: cm_info
+
+    - name: Save ConfigMaps to file
+      copy:
+        content: "{{ cm_info.resources | to_nice_yaml }}"
+        dest: "/tmp/dev-team-configmaps-backup.yaml"
+
+---
+# playbook-delete-namespace.yml
+- name: Delete old OpenShift namespace
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Remove namespace
+      kubernetes.core.k8s:
+        state: absent
+        kind: Namespace
+        name: old-dev-env
